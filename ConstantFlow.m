@@ -1,0 +1,292 @@
+function [Qin,Qex,Vin,Vex] = ConstantFlow(tt,ss,Y,vol,par,res,geom_mode,ratio)
+
+convf = 100;
+
+% save each column as array
+gnum = Y{:,1}; % generation number
+n = Y{:,2}; % number of airways in each generation
+Ldata = Y{:,3}/convf; % length of airways in each generation converted FROM centimeters TO meters
+rdata = Y{:,4}/2/convf; % radius of airways in each generation (diameter cut in half and converted FROM centimeters TO meters)
+Ba = Y{:,5}.*pi/180; % branching angle converted FROM degrees TO radians
+Ga = Y{:,6}.*pi/180; % gravity angle converted FROM degrees TO radians
+%     A = n.*(pi*r.^2); %Y{:,7}; % cross sectional area calculated using area equation since I already converted the radii
+V = Y{:,8}./10^6; % volume
+%     CV = Y{:,9}./10^6; % cumulative volume
+
+% Indices for each compartment
+c1_ind = 1; % compartment 1 consists of the trachea (generation 1 in Yeh)
+c2_ind = 2:5; % compartment 2 consists of the main bronchus and bronchioles (generations
+% 2-5 in Yeh)
+c3_ind = 6:16; % compartment 3 consists of the conductive and transitory airways (generations
+% 6-16 in Yeh)
+% c4_ind = 17:length(gnum); % compartment 4 consists of the respiratory airways and alveoli (generations
+% % 17-25 in Yeh)
+c4_ind = 17:length(gnum)-1; % compartment 4 consists of the respiratory airways and alveoli (generations
+% 17-25 in Yeh)
+c5_ind = length(gnum); % compartment 4 consists of the respiratory airways and alveoli (generations
+% 17-25 in Yeh)
+
+% SCALING
+
+% Scale to our desired lung volume to initialize
+sc = (vol.TLC/sum(V))^(1/3); % scaled to TLC
+r0 = rdata*sc;
+L0 = Ldata*sc;
+
+if ratio==1
+    VDratio = sum(V([c1_ind c2_ind c3_ind]))/sum(V);
+%     VRratio = sum(V(c4_ind))/sum(V);
+elseif ratio==2
+    VDratio = .12;
+%     VRratio = .88;
+end
+
+VDTLC = VDratio*vol.TLC;
+VRTLC = (1-VDratio)*vol.TLC;
+
+Ppl = ss(:,1); % intrapleural pressure
+Pt = ss(:,2); % pressure in larynx
+Pb = ss(:,3); % pressure in trachea
+Pc = ss(:,4); % pressure in bronchai
+Pra = ss(:,5); % pressure in alveoli (lung pressure)
+
+% LUNG VOLUMES
+
+Vt = par.Ct*Pt+par.Vut; % volume of air in trachea
+Vb = par.Cb*(Pb-Ppl)+par.Vub; % volume of air in bronchea
+Vc = par.Cc*(Pc-Ppl)+par.Vuc; % volume of air in conducting airways
+% Vra = par.Cra*(Pra-Ppl)+par.Vura; % volume of air in respiratory airways
+% Vtotal = Vt+Vb+Vc+Vra;
+VA = par.Cra*(Pra-Ppl)+par.Vura; % volume of air in respiratory airways
+Vtotal = Vt+Vb+Vc+VA;
+
+
+% SCALE GEOMETRY
+if geom_mode==1
+    cscale = ones(1,length(tt));
+    rscale = ones(1,length(tt));
+elseif geom_mode==2
+
+    % scaled to TLC
+%     rscale = (Vra./VRTLC).^(1/3); % updated
+    rscale = (VA./VRTLC).^(1/3); 
+    cscale = ((Vt+Vb+Vc)./VDTLC).^(1/2); % updated
+    
+elseif geom_mode==3
+    cscale = ones(1,length(tt));
+%     rscale = (Vra./VRFRC).^(1/3);
+    rscale = (VA./VRFRC).^(1/3);
+end
+
+r = ones(length(r0),1);
+L = ones(length(L0),1);
+
+for i = 1:length(tt)
+    
+    % group generations into compartments
+    % compartment 1 consists of the trachea (generation 1 in Yeh)
+    r(c1_ind) = r0(c1_ind)*cscale(i); 
+    L(c1_ind) = L0(c1_ind);
+    
+    % compartment 2 consists of the main bronchus and bronchioles (generations
+    % 2-5 in Yeh)
+    r(c2_ind) = r0(c2_ind)*cscale(i); 
+    L(c2_ind) = L0(c2_ind);
+    
+    % compartment 3 consists of the conductive and transitory airways (generations
+    % 6-16 in Yeh)
+    r(c3_ind) = r0(c3_ind)*cscale(i);
+    L(c3_ind) = L0(c3_ind);
+
+    % compartment 4 consists of the respiratory airways and alveoli (generations
+    % 17-25 in Yeh)
+    r(c4_ind) = r0(c4_ind)*rscale(i);
+    L(c4_ind) = L0(c4_ind)*rscale(i);
+
+    r(c5_ind) = r0(c5_ind)*rscale(i);
+    L(c5_ind) = L0(c5_ind)*rscale(i);
+
+    Vra(i) = sum(pi*r(c4_ind).^2.*L(c4_ind).*n(c4_ind));
+
+    r = r(:);
+    L = L(:);
+
+    % calculate parallel resistance based on Pouseille flow - this is the 
+    % resistance in each generation
+    mu = par.mu/98.0665; % convert viscosity FROM pascal seconds TO cmh2o seconds (1 cmh2o = 98.0665 Pa)
+
+    R = (8/pi)*mu*(L./r.^4)./n; % cmh2o s m^-3 - resistance in identical parallel tubes
+    
+    Rt(i) = sum(R(c1_ind));
+    Rb(i) = sum(R(c2_ind));
+    Rc(i) = sum(R(c3_ind));
+%     Rra(i) = sum(R(c4_ind));
+    
+    Rra(i) = sum(R([c4_ind c5_ind]));
+
+%     Rt(i) = 1.021*1e3;
+%     Rb(i) = 0.3369*1e3;
+%     Rc(i) = 0.3063*1e3;
+%     Rra(i) = 0.0817*1e3;
+    % VOLUMETRIC FLOWS
+
+    Qt(i) = (par.Pao-Pt(i))/Rt(i);
+    Qb(i) = (Pt(i)-Pb(i))/Rb(i); 
+    Qc(i) = (Pb(i)-Pc(i))/Rc(i); 
+    Qra(i) = (Pc(i)-Pra(i))/Rra(i);
+    
+
+    Q(c1_ind) = Qt(i);
+    Q(c2_ind) = Qb(i);
+    Q(c3_ind) = Qc(i);
+    Q(c4_ind) = Qra(i);
+    Q = Q(:);
+end
+
+Qt = Qt(:);
+Qb = Qb(:); 
+Qc = Qc(:); 
+Qra = Qra(:);
+
+% figure(80)
+% plot(tt,Qt*1000)
+% stop
+Vra = Vra(:);
+
+Valv = VA-Vra;
+
+tm = mod(tt,res.T);
+for i = 1:length(tm)
+    if tm(i)>=0 && tm(i)<=res.TI
+        Pmus(i) = -res.Pmusmin*tm(i)^2/(res.TI*res.TE)+res.Pmusmin*res.T.*tm(i)/(res.TI*res.TE); % Pmus - pressure generated by respiratory muscles 
+        u(i) = 1;
+%         dPmus(i) = -2*res.Pmusmin*tt(i)/(res.TI*res.TE)+res.Pmusmin*res.T/(res.TI*res.TE);
+    elseif tm(i)>res.TI && tm(i)<=res.T
+%         Pmus(i) = -res.Pmusmin*tt(i)^2/(res.TI*res.TE)+res.Pmusmin*res.T.*tt(i)/(res.TI*res.TE);
+        Pmus(i) = res.Pmusmin/(1-exp(-res.TE/res.tau))*(exp(-(tm(i)-res.TI)/res.tau)-exp(-res.TE/res.tau));
+        u(i) = 0;
+%         dPmus(i) = -2*res.Pmusmin*tt(i)/(res.TI*res.TE)+res.Pmusmin*res.T/(res.TI*res.TE);
+%         dPmus(i) = res.Pmusmin/(1-exp(-res.TE/res.tau))*(-1/res.tau)*exp(-(tt(i)-res.TI)/res.tau);
+    end
+end
+
+% INHALED PARTICLES
+% In = trapz(t(1:TIind),u(1:TIind)'.*Qt(1:TIind).*par.Cin);
+
+% FLOWS
+
+% inhale
+avg_Qtin = (1/res.TI)*trapz(tt,u'.*Qt);
+max_Qtin = max(u'.*Qt);
+Qtin = (avg_Qtin+max_Qtin)/2;
+% Qtin = avg_Qtin;
+
+avg_Qbin = (1/res.TI)*trapz(tt,u'.*Qb);
+max_Qbin = max(u'.*Qb);
+Qbin = (avg_Qbin+max_Qbin)/2;
+% Qbin = avg_Qbin;
+
+avg_Qcin = (1/res.TI)*trapz(tt,u'.*Qc);
+max_Qcin = max(u'.*Qc);
+Qcin = (avg_Qcin+max_Qcin)/2;
+% Qcin = avg_Qcin;
+
+avg_Qrain = (1/res.TI)*trapz(tt,u'.*Qra);
+max_Qrain = max(u'.*Qra);
+Qrain = (avg_Qrain+max_Qrain)/2;
+% Qrain = avg_Qrain;
+
+% exhale
+avg_Qtex = (1/res.TE)*trapz(tt,(1-u)'.*abs(Qt));
+max_Qtex = max((1-u)'.*abs(Qt));
+Qtex = (avg_Qtex+max_Qtex)/2;
+% Qtex = avg_Qtex;
+
+avg_Qbex = (1/res.TE)*trapz(tt,(1-u)'.*abs(Qb));
+max_Qbex = max((1-u)'.*abs(Qb));
+Qbex = (avg_Qbex+max_Qbex)/2;
+% Qbex = avg_Qbex;
+
+avg_Qcex = (1/res.TE)*trapz(tt,(1-u)'.*abs(Qc));
+max_Qcex = max((1-u)'.*abs(Qc));
+Qcex = (avg_Qcex+max_Qcex)/2;
+% Qcex = avg_Qcex;
+
+avg_Qraex = (1/res.TE)*trapz(tt,(1-u)'.*abs(Qra));
+max_Qraex = max((1-u)'.*abs(Qra));
+Qraex = (avg_Qraex+max_Qraex)/2;
+% Qraex = avg_Qraex;
+
+Qin = [Qtin,Qbin, Qcin,Qrain];
+
+Qex = [Qtex, Qbex, Qcex, Qraex];
+
+% VOLUMES
+
+% inhale
+avg_Vtin = (1/res.TI)*trapz(tt,u'.*Vt);
+max_Vtin = max(u'.*Vt);
+Vtin = (avg_Vtin+max_Vtin)/2;
+% Vtin = avg_Vtin;
+
+avg_Vbin = (1/res.TI)*trapz(tt,u'.*Vb);
+max_Vbin = max(u'.*Vb);
+Vbin = (avg_Vbin+max_Vbin)/2;
+% Vbin = avg_Vbin;
+
+avg_Vcin = (1/res.TI)*trapz(tt,u'.*Vc);
+max_Vcin = max(u'.*Vc);
+Vcin = (avg_Vcin+max_Vcin)/2;
+% Vcin = avg_Vcin;
+
+avg_Vrain = (1/res.TI)*trapz(tt,u'.*Vra);
+max_Vrain = max(u'.*Vra);
+Vrain = (avg_Vrain+max_Vrain)/2;
+
+avg_Valvin = (1/res.TI)*trapz(tt,u'.*Valv);
+max_Valvin = max(u'.*Valv);
+Valvin = (avg_Valvin+max_Valvin)/2;
+
+avg_VAin = (1/res.TI)*trapz(tt,u'.*VA);
+max_VAin = max(u'.*VA);
+VAin = (avg_VAin+max_VAin)/2;
+
+% exhale
+avg_Vtex = (1/res.TE)*trapz(tt,(1-u)'.*Vt);
+max_Vtex = max((1-u)'.*Vt);
+Vtex = (avg_Vtex+max_Vtex)/2;
+% Vtex = avg_Vtex;
+
+avg_Vbex = (1/res.TE)*trapz(tt,(1-u)'.*Vb);
+max_Vbex = max((1-u)'.*Vb);
+Vbex = (avg_Vbex+max_Vbex)/2;
+% Vbex = avg_Vbex;
+
+avg_Vcex = (1/res.TE)*trapz(tt,(1-u)'.*Vc);
+max_Vcex = max((1-u)'.*Vc);
+Vcex = (avg_Vcex+max_Vcex)/2;
+% Vcex = avg_Vcex;
+
+% avg_Vraex = (1/res.TE)*trapz(tt,(1-u)'.*Vra);
+% max_Vraex = max((1-u)'.*Vra);
+% Vraex = (avg_Vraex+max_Vraex)/2;
+% 
+% Vin = [Vtin,Vbin, Vcin,Vrain];
+% Vex = [Vtex, Vbex, Vcex, Vraex];
+
+avg_Vraex = (1/res.TE)*trapz(tt,(1-u)'.*Vra);
+max_Vraex = max((1-u)'.*Vra);
+Vraex = (avg_Vraex+max_Vraex)/2;
+
+avg_Valvex = (1/res.TE)*trapz(tt,(1-u)'.*Valv);
+max_Valvex = max((1-u)'.*Valv);
+Valvex = (avg_Valvex+max_Valvex)/2;
+
+avg_VAex = (1/res.TE)*trapz(tt,(1-u)'.*VA);
+max_VAex = max((1-u)'.*VA);
+VAex = (avg_VAex+max_VAex)/2;
+
+Vin = [Vtin,Vbin, Vcin,Vrain,Valvin,VAin];
+Vex = [Vtex, Vbex, Vcex, Vraex, Valvex, VAex];
+
+end
